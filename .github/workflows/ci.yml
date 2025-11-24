@@ -22,8 +22,8 @@ jobs:
           yamllint experiments
       - name: Notebook lint
         run: |
-          nbqa black --diff notebooks || true
-          nbqa ruff notebooks || true
+          nbqa black --diff notebooks
+          nbqa ruff notebooks
       - name: Tests
         run: |
           python -m compileall .
