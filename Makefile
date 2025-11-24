@@ -8,7 +8,7 @@ clean:
 
 publish:
 python br_lab.py publish $(EXP)
-python scripts/postbuild.py
+	python scripts/postbuild.py
 
 lint:
 	ruff .
