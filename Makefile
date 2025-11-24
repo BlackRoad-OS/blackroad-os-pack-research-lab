@@ -15,4 +15,4 @@ lint:
 	yamllint experiments
 
 format:
-black .
+	black .
