@@ -4,7 +4,7 @@ run:
 python br_lab.py run $(EXP)
 
 clean:
-rm -rf __pycache__ .pytest_cache .ruff_cache
+	rm -rf __pycache__ .pytest_cache .ruff_cache
 
 publish:
 python br_lab.py publish $(EXP)
