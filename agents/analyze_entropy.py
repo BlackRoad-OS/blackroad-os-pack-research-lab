@@ -24,4 +24,13 @@ def main(raw_cfg: str) -> None:
 
 
 if __name__ == "__main__":
-    main(sys.argv[1])
+    try:
+        raw_cfg = sys.argv[1]
+    except IndexError:
+        print("Error: Missing required JSON argument. Usage: python analyze_entropy.py '<json_string>'")
+        sys.exit(1)
+    try:
+        main(raw_cfg)
+    except json.JSONDecodeError as e:
+        print(f"Error: Invalid JSON input: {e}")
+        sys.exit(1)
