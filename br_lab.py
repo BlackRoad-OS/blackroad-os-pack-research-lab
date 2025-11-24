@@ -37,10 +37,25 @@ def run_agent(agent_name: str, cfg: dict) -> None:
 
 def publish_notebook(nb_path: pathlib.Path) -> None:
     html_path = nb_path.with_suffix(".html")
-    subprocess.run(
-        ["jupyter", "nbconvert", "--to", "html", str(nb_path), "--output", html_path.name],
-        check=True,
-    )
+    try:
+        subprocess.run(
+            [
+                "jupyter",
+                "nbconvert",
+                "--to",
+                "html",
+                str(nb_path),
+                "--output",
+                html_path.name,
+            ],
+            check=True,
+        )
+    except FileNotFoundError as e:
+        raise click.ClickException(
+            "jupyter command not found. Please install Jupyter: pip install jupyter"
+        ) from e
+    except subprocess.CalledProcessError as e:
+        raise click.ClickException(f"Failed to convert notebook: {e}") from e
 
 
 @click.group()
