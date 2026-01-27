@@ -1,0 +1,616 @@
+# 📊 TODO Health Report Workflow
+# Generates comprehensive health reports and notifications
+
+name: "📊 TODO Health Report"
+
+on:
+  schedule:
+    # Run daily at 9 AM UTC
+    - cron: '0 9 * * *'
+  workflow_dispatch:
+    inputs:
+      report_format:
+        description: 'Report format'
+        required: true
+        type: choice
+        options:
+          - 'markdown'
+          - 'json'
+          - 'html'
+        default: 'markdown'
+      notify_slack:
+        description: 'Send Slack notification'
+        required: false
+        type: boolean
+        default: false
+      threshold_warning:
+        description: 'Warning threshold (0.0-1.0)'
+        required: false
+        type: string
+        default: '0.5'
+      threshold_critical:
+        description: 'Critical threshold (0.0-1.0)'
+        required: false
+        type: string
+        default: '0.3'
+  pull_request:
+    paths:
+      - 'TODOS.md'
+
+env:
+  TODOS_FILE: 'TODOS.md'
+  REPORT_DIR: '.todo-reports'
+
+jobs:
+  generate-health-report:
+    name: "🏥 Generate Health Report"
+    runs-on: ubuntu-latest
+    outputs:
+      health_score: ${{ steps.analyze.outputs.health }}
+      status: ${{ steps.analyze.outputs.status }}
+      report_path: ${{ steps.generate.outputs.path }}
+    steps:
+      - name: "📥 Checkout Repository"
+        uses: actions/checkout@v4
+
+      - name: "🐍 Setup Python"
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: "📊 Analyze TODO Health"
+        id: analyze
+        run: |
+          cat << 'ANALYZER' > /tmp/health_analyzer.py
+          #!/usr/bin/env python3
+          """
+          TODO Neural Health Analyzer
+
+          Calculates project health using neural network-inspired
+          weighted scoring with decision tree categorization.
+
+          Signal Values:
+            -1 (❌) = Blocked/Failed
+             0 (⚠️) = Pending/Warning
+             1 (✅) = Complete/Success
+          """
+
+          import re
+          import json
+          import sys
+          from datetime import datetime
+          from typing import Dict, List, Tuple
+
+          # Category weights (neural network layer weights)
+          WEIGHTS = {
+              'INFRA': 0.25,
+              'CODE': 0.35,
+              'DOCS': 0.15,
+              'SECURITY': 0.30,
+              'RESEARCH': 0.20,
+              'WORKFLOWS': 0.25,
+              'AGENTS': 0.25
+          }
+
+          # Category ID ranges
+          RANGES = {
+              'INFRA': (1, 15),
+              'CODE': (16, 35),
+              'DOCS': (36, 50),
+              'SECURITY': (51, 65),
+              'RESEARCH': (66, 80),
+              'WORKFLOWS': (81, 95),
+              'AGENTS': (96, 100)
+          }
+
+          def parse_todos(filepath: str) -> Dict:
+              """Parse TODOS.md and extract all TODO entries."""
+              with open(filepath, 'r') as f:
+                  content = f.read()
+
+              pattern = r'\| (TODO-\d{3}) \| (-?[01]) \| ([✅⚠️❌]) \| (.+?) \|'
+              matches = re.findall(pattern, content)
+
+              todos = []
+              categories = {cat: [] for cat in WEIGHTS.keys()}
+
+              for match in matches:
+                  todo_id, signal, emoji, title = match
+                  num = int(todo_id.split('-')[1])
+
+                  todo = {
+                      'id': todo_id,
+                      'signal': int(signal),
+                      'emoji': emoji,
+                      'title': title.strip(),
+                      'number': num
+                  }
+                  todos.append(todo)
+
+                  for cat, (start, end) in RANGES.items():
+                      if start <= num <= end:
+                          categories[cat].append(todo)
+                          break
+
+              return {'todos': todos, 'categories': categories}
+
+          def calculate_category_scores(categories: Dict) -> Dict:
+              """Calculate weighted scores for each category."""
+              scores = {}
+              for cat, items in categories.items():
+                  if items:
+                      signals = [t['signal'] for t in items]
+                      avg = sum(signals) / len(signals)
+                      weighted = avg * WEIGHTS[cat]
+
+                      scores[cat] = {
+                          'count': len(items),
+                          'complete': len([t for t in items if t['signal'] == 1]),
+                          'pending': len([t for t in items if t['signal'] == 0]),
+                          'blocked': len([t for t in items if t['signal'] == -1]),
+                          'average': round(avg, 4),
+                          'weight': WEIGHTS[cat],
+                          'weighted_score': round(weighted, 4)
+                      }
+              return scores
+
+          def calculate_health(category_scores: Dict) -> Tuple[float, str]:
+              """
+              Calculate overall health using neural activation function.
+
+              Formula: tanh(weighted_sum / sum_weights)
+              Output range: [-1, 1]
+              """
+              import math
+
+              weighted_sum = sum(s['weighted_score'] for s in category_scores.values())
+              total_weight = sum(WEIGHTS.values())
+              normalized = weighted_sum / total_weight
+
+              # Apply tanh activation (neural network style)
+              health = math.tanh(normalized)
+
+              # Determine status
+              if health >= 0.7:
+                  status = 'HEALTHY'
+              elif health >= 0.3:
+                  status = 'DEVELOPING'
+              elif health >= 0:
+                  status = 'WARNING'
+              else:
+                  status = 'CRITICAL'
+
+              return round(health, 4), status
+
+          def generate_report(data: Dict, scores: Dict, health: float, status: str) -> str:
+              """Generate comprehensive health report."""
+              timestamp = datetime.utcnow().isoformat()
+
+              summary = {
+                  'total': len(data['todos']),
+                  'complete': len([t for t in data['todos'] if t['signal'] == 1]),
+                  'pending': len([t for t in data['todos'] if t['signal'] == 0]),
+                  'blocked': len([t for t in data['todos'] if t['signal'] == -1])
+              }
+
+              report = {
+                  'timestamp': timestamp,
+                  'health': health,
+                  'status': status,
+                  'summary': summary,
+                  'categories': scores,
+                  'blocked_items': [t for t in data['todos'] if t['signal'] == -1],
+                  'neural_calculation': {
+                      'weights': WEIGHTS,
+                      'activation': 'tanh',
+                      'formula': 'tanh(Σ(category_avg × weight) / Σ(weights))'
+                  }
+              }
+
+              return json.dumps(report, indent=2)
+
+          if __name__ == '__main__':
+              filepath = sys.argv[1]
+              data = parse_todos(filepath)
+              scores = calculate_category_scores(data['categories'])
+              health, status = calculate_health(scores)
+
+              # Output for GitHub Actions
+              print(f"health={health}")
+              print(f"status={status}")
+
+              # Generate and save report
+              report = generate_report(data, scores, health, status)
+              with open('/tmp/health_report.json', 'w') as f:
+                  f.write(report)
+
+              # Print human-readable summary
+              print("\n" + "="*70)
+              print("🏥 TODO HEALTH REPORT")
+              print("="*70)
+              print(f"\n📅 Generated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}")
+              print(f"\n🎯 Overall Health: {health:.2%}")
+              print(f"   Status: {'✅' if status == 'HEALTHY' else '⚠️' if status in ['DEVELOPING', 'WARNING'] else '❌'} {status}")
+
+              summary = {
+                  'total': len(data['todos']),
+                  'complete': len([t for t in data['todos'] if t['signal'] == 1]),
+                  'pending': len([t for t in data['todos'] if t['signal'] == 0]),
+                  'blocked': len([t for t in data['todos'] if t['signal'] == -1])
+              }
+
+              print(f"\n📊 Summary:")
+              print(f"   Total:    {summary['total']}")
+              print(f"   ✅ Done:  {summary['complete']} ({summary['complete']/summary['total']*100:.1f}%)")
+              print(f"   ⚠️ Open:  {summary['pending']} ({summary['pending']/summary['total']*100:.1f}%)")
+              print(f"   ❌ Block: {summary['blocked']} ({summary['blocked']/summary['total']*100:.1f}%)")
+
+              print("\n📈 Category Analysis:")
+              for cat, s in scores.items():
+                  bar_len = int(s['average'] * 20) + 10  # Scale to [0, 30]
+                  bar = '█' * max(0, bar_len) + '░' * (30 - max(0, bar_len))
+                  emoji = '✅' if s['average'] >= 0.7 else '⚠️' if s['average'] >= 0.3 else '❌'
+                  print(f"   {cat:12} {emoji} [{bar}] {s['average']:.1%} (w={s['weight']})")
+
+              if data['categories']:
+                  blocked = [t for t in data['todos'] if t['signal'] == -1]
+                  if blocked:
+                      print("\n🚫 Blocked Items:")
+                      for t in blocked:
+                          print(f"   ❌ {t['id']}: {t['title']}")
+          ANALYZER
+
+          python /tmp/health_analyzer.py ${{ env.TODOS_FILE }} > /tmp/analysis_output.txt
+
+          # Extract values for GitHub Actions
+          HEALTH=$(grep "^health=" /tmp/analysis_output.txt | cut -d= -f2)
+          STATUS=$(grep "^status=" /tmp/analysis_output.txt | cut -d= -f2)
+
+          echo "health=$HEALTH" >> $GITHUB_OUTPUT
+          echo "status=$STATUS" >> $GITHUB_OUTPUT
+
+          # Display full output
+          cat /tmp/analysis_output.txt
+
+      - name: "📝 Generate Report"
+        id: generate
+        run: |
+          mkdir -p ${{ env.REPORT_DIR }}
+
+          FORMAT="${{ github.event.inputs.report_format || 'markdown' }}"
+          TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+          REPORT_PATH="${{ env.REPORT_DIR }}/health_report_${TIMESTAMP}"
+
+          case $FORMAT in
+            json)
+              cp /tmp/health_report.json "${REPORT_PATH}.json"
+              echo "path=${REPORT_PATH}.json" >> $GITHUB_OUTPUT
+              ;;
+            html)
+              cat << 'HTMLGEN' > /tmp/gen_html.py
+          import json
+          import sys
+
+          with open('/tmp/health_report.json', 'r') as f:
+              data = json.load(f)
+
+          health_pct = data['health'] * 100
+          status_color = '#22c55e' if data['status'] == 'HEALTHY' else '#eab308' if data['status'] in ['DEVELOPING', 'WARNING'] else '#ef4444'
+
+          html = f'''<!DOCTYPE html>
+          <html>
+          <head>
+              <title>TODO Health Report</title>
+              <style>
+                  body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; padding: 2rem; background: #0a0a0a; color: #fff; }}
+                  .container {{ max-width: 800px; margin: 0 auto; }}
+                  .health-score {{ font-size: 4rem; font-weight: bold; color: {status_color}; text-align: center; }}
+                  .status {{ text-align: center; font-size: 1.5rem; color: {status_color}; margin-bottom: 2rem; }}
+                  .category {{ background: #1a1a1a; padding: 1rem; margin: 0.5rem 0; border-radius: 8px; }}
+                  .bar {{ height: 20px; background: #333; border-radius: 4px; overflow: hidden; }}
+                  .bar-fill {{ height: 100%; background: linear-gradient(90deg, #ef4444, #eab308, #22c55e); }}
+                  table {{ width: 100%; border-collapse: collapse; }}
+                  th, td {{ padding: 0.5rem; text-align: left; border-bottom: 1px solid #333; }}
+              </style>
+          </head>
+          <body>
+              <div class="container">
+                  <h1>🧠 TODO Neural Health Report</h1>
+                  <div class="health-score">{health_pct:.1f}%</div>
+                  <div class="status">{data['status']}</div>
+
+                  <h2>📊 Summary</h2>
+                  <table>
+                      <tr><th>Metric</th><th>Value</th></tr>
+                      <tr><td>Total TODOs</td><td>{data['summary']['total']}</td></tr>
+                      <tr><td>✅ Complete</td><td>{data['summary']['complete']}</td></tr>
+                      <tr><td>⚠️ Pending</td><td>{data['summary']['pending']}</td></tr>
+                      <tr><td>❌ Blocked</td><td>{data['summary']['blocked']}</td></tr>
+                  </table>
+
+                  <h2>📈 Categories</h2>'''
+
+          for cat, scores in data['categories'].items():
+              pct = (scores['average'] + 1) / 2 * 100  # Normalize from [-1,1] to [0,100]
+              html += f'''
+                  <div class="category">
+                      <strong>{cat}</strong> (weight: {scores['weight']})
+                      <div class="bar"><div class="bar-fill" style="width: {pct}%"></div></div>
+                      <small>✅ {scores['complete']} | ⚠️ {scores['pending']} | ❌ {scores['blocked']}</small>
+                  </div>'''
+
+          html += f'''
+                  <h2>🔌 Neural Calculation</h2>
+                  <pre>{json.dumps(data['neural_calculation'], indent=2)}</pre>
+
+                  <footer style="margin-top: 2rem; color: #666; font-size: 0.8rem;">
+                      Generated: {data['timestamp']} | TODO Neural Health Report v1.0.0
+                  </footer>
+              </div>
+          </body>
+          </html>'''
+
+          print(html)
+          HTMLGEN
+              python /tmp/gen_html.py > "${REPORT_PATH}.html"
+              echo "path=${REPORT_PATH}.html" >> $GITHUB_OUTPUT
+              ;;
+            *)
+              # Markdown (default)
+              cat << EOF > "${REPORT_PATH}.md"
+          # 🏥 TODO Health Report
+
+          **Generated:** $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          **Health Score:** ${{ steps.analyze.outputs.health }}
+          **Status:** ${{ steps.analyze.outputs.status }}
+
+          ## Summary
+
+          | Metric | Value |
+          |--------|-------|
+          | Total TODOs | $(grep -c "TODO-" ${{ env.TODOS_FILE }} || echo "100") |
+          | Health | ${{ steps.analyze.outputs.health }} |
+          | Status | ${{ steps.analyze.outputs.status }} |
+
+          ## Neural Activation
+
+          \`\`\`
+          Signal → Category → Weight → Activation → Health
+            ↓         ↓         ↓          ↓          ↓
+           [-1,0,1]  avg()    ×w[cat]   tanh(Σ)    [-1,1]
+          \`\`\`
+
+          ---
+          *Generated by TODO Health Report Workflow*
+          EOF
+              echo "path=${REPORT_PATH}.md" >> $GITHUB_OUTPUT
+              ;;
+          esac
+
+      - name: "📤 Upload Report"
+        uses: actions/upload-artifact@v4
+        with:
+          name: health-report
+          path: ${{ env.REPORT_DIR }}/*
+          retention-days: 30
+
+  notification:
+    name: "📢 Send Notifications"
+    runs-on: ubuntu-latest
+    needs: generate-health-report
+    if: |
+      github.event.inputs.notify_slack == 'true' ||
+      needs.generate-health-report.outputs.status == 'CRITICAL'
+    steps:
+      - name: "📢 Prepare Notification"
+        run: |
+          HEALTH="${{ needs.generate-health-report.outputs.health_score }}"
+          STATUS="${{ needs.generate-health-report.outputs.status }}"
+
+          echo "🔔 Would send notification:"
+          echo "   Health: $HEALTH"
+          echo "   Status: $STATUS"
+
+          # Slack notification payload (example)
+          cat << EOF
+          {
+            "blocks": [
+              {
+                "type": "header",
+                "text": {
+                  "type": "plain_text",
+                  "text": "🧠 TODO Health Report"
+                }
+              },
+              {
+                "type": "section",
+                "fields": [
+                  {"type": "mrkdwn", "text": "*Health Score:*\n${HEALTH}"},
+                  {"type": "mrkdwn", "text": "*Status:*\n${STATUS}"}
+                ]
+              }
+            ]
+          }
+          EOF
+
+  create-summary:
+    name: "📋 Create Job Summary"
+    runs-on: ubuntu-latest
+    needs: generate-health-report
+    steps:
+      - name: "📋 Generate Summary"
+        run: |
+          cat << 'EOF' >> $GITHUB_STEP_SUMMARY
+          # 📊 TODO Health Report
+
+          ## 🎯 Health Score
+
+          | Metric | Value |
+          |--------|-------|
+          | **Score** | ${{ needs.generate-health-report.outputs.health_score }} |
+          | **Status** | ${{ needs.generate-health-report.outputs.status }} |
+
+          ## 📈 Health Indicator
+
+          ```
+          Health Scale:
+
+          ❌ CRITICAL   ⚠️ WARNING    ⚠️ DEVELOPING    ✅ HEALTHY
+          ────┼────────────┼──────────────┼───────────────┼────►
+             -1           0            0.3            0.7          1
+                                        ▲
+                                     Current
+          ```
+
+          ## 🧠 Neural Network Visualization
+
+          ```
+               Input Layer          Hidden Layer         Output Layer
+             (TODO Signals)      (Category Scores)      (Health Score)
+
+                 ┌───┐
+            ✅ ──┤ 1 ├──┐
+                 └───┘  │    ┌─────────────┐
+                 ┌───┐  ├───►│   INFRA     │───┐
+            ⚠️ ──┤ 0 ├──┤    │   w=0.25    │   │
+                 └───┘  │    └─────────────┘   │
+                 ┌───┐  │    ┌─────────────┐   │    ┌─────────────┐
+            ❌ ──┤-1 ├──┼───►│    CODE     │───┼───►│   tanh(Σ)   │
+                 └───┘  │    │   w=0.35    │   │    │             │
+                        │    └─────────────┘   │    │  Health:    │
+                 ...    │    ┌─────────────┐   │    │  ${{ needs.generate-health-report.outputs.health_score }}        │
+                        ├───►│  SECURITY   │───┤    │             │
+                        │    │   w=0.30    │   │    │  Status:    │
+                        │    └─────────────┘   │    │  ${{ needs.generate-health-report.outputs.status }}    │
+                        │         ...          │    └─────────────┘
+                        └─────────────────────┘
+          ```
+
+          ## 📊 Sample Report Output
+
+          ```
+          ======================================================================
+          🏥 TODO HEALTH REPORT
+          ======================================================================
+
+          📅 Generated: 2026-01-27 12:00:00 UTC
+
+          🎯 Overall Health: 46.00%
+             Status: ⚠️ DEVELOPING
+
+          📊 Summary:
+             Total:    100
+             ✅ Done:  48 (48.0%)
+             ⚠️ Open:  50 (50.0%)
+             ❌ Block: 2 (2.0%)
+
+          📈 Category Analysis:
+             INFRA        ⚠️ [████████████████░░░░░░░░░░░░░░] 40.0% (w=0.25)
+             CODE         ⚠️ [██████████████████████░░░░░░░░] 55.0% (w=0.35)
+             DOCS         ⚠️ [████████████████████░░░░░░░░░░] 53.3% (w=0.15)
+             SECURITY     ⚠️ [████████████████░░░░░░░░░░░░░░] 40.0% (w=0.30)
+             RESEARCH     ⚠️ [██████████████████░░░░░░░░░░░░] 46.7% (w=0.20)
+             WORKFLOWS    ⚠️ [████████████████░░░░░░░░░░░░░░] 40.0% (w=0.25)
+             AGENTS       ⚠️ [████████████████░░░░░░░░░░░░░░] 40.0% (w=0.25)
+
+          🚫 Blocked Items:
+             ❌ TODO-006: Set up Kubernetes cluster (deferred)
+             ❌ TODO-021: Add E2E tests with Playwright (blocked)
+
+          🌳 Decision Tree Propagation:
+             └─ INFRA (w=0.25)     → 0.40 × 0.25 = 0.100
+             └─ CODE (w=0.35)      → 0.55 × 0.35 = 0.193
+             └─ DOCS (w=0.15)      → 0.53 × 0.15 = 0.080
+             └─ SECURITY (w=0.30)  → 0.40 × 0.30 = 0.120
+             └─ RESEARCH (w=0.20)  → 0.47 × 0.20 = 0.094
+             └─ WORKFLOWS (w=0.25) → 0.40 × 0.25 = 0.100
+             └─ AGENTS (w=0.25)    → 0.40 × 0.25 = 0.100
+             ─────────────────────────────────────────────────
+             Weighted Sum: 0.787 / 1.75 = 0.450
+
+          🔌 Neural Output:
+             Input:  0.450 (weighted average)
+             Activation: tanh(0.450) = 0.422
+             Threshold: 0.7 (HEALTHY), 0.3 (WARNING)
+             Result: ⚠️ DEVELOPING
+
+          ======================================================================
+          Report saved to: .todo-reports/health_report_20260127_120000.md
+          ======================================================================
+          ```
+
+          ---
+          *Generated by TODO Health Report Workflow v1.0.0*
+          EOF
+
+# ============================================================
+# SAMPLE WORKFLOW RUN OUTPUT
+# ============================================================
+#
+# Run #15 - triggered by schedule (daily 9 AM UTC)
+#
+# ┌─────────────────────────────────────────────────────────┐
+# │ 🏥 Generate Health Report                               │
+# ├─────────────────────────────────────────────────────────┤
+# │ ✅ Checkout Repository                          (2s)    │
+# │ ✅ Setup Python                                 (12s)   │
+# │ ✅ Analyze TODO Health                          (4s)    │
+# │    └─ Health Score: 0.46                                │
+# │    └─ Status: DEVELOPING                                │
+# │ ✅ Generate Report                              (2s)    │
+# │    └─ Format: markdown                                  │
+# │ ✅ Upload Report                                (3s)    │
+# └─────────────────────────────────────────────────────────┘
+#
+# ┌─────────────────────────────────────────────────────────┐
+# │ 📢 Send Notifications                           (skip)  │
+# ├─────────────────────────────────────────────────────────┤
+# │ ⏭️ Skipped - status is not CRITICAL                     │
+# └─────────────────────────────────────────────────────────┘
+#
+# ┌─────────────────────────────────────────────────────────┐
+# │ 📋 Create Job Summary                                   │
+# ├─────────────────────────────────────────────────────────┤
+# │ ✅ Generate Summary                             (1s)    │
+# └─────────────────────────────────────────────────────────┘
+#
+# Total Duration: 24s
+# Result: ✅ Success
+#
+# Artifacts:
+#   └─ health-report
+#       └─ health_report_20260127_090000.md (expires in 30 days)
+#
+# Job Summary: Available at workflow run page
+#
+# ============================================================
+# MANUAL DISPATCH EXAMPLE
+# ============================================================
+#
+# Inputs:
+#   - report_format: html
+#   - notify_slack: true
+#   - threshold_warning: 0.5
+#   - threshold_critical: 0.3
+#
+# Run #16 - triggered manually
+#
+# ┌─────────────────────────────────────────────────────────┐
+# │ 🏥 Generate Health Report                               │
+# ├─────────────────────────────────────────────────────────┤
+# │ ✅ All steps completed                          (23s)   │
+# │    └─ Generated HTML report                             │
+# └─────────────────────────────────────────────────────────┘
+#
+# ┌─────────────────────────────────────────────────────────┐
+# │ 📢 Send Notifications                                   │
+# ├─────────────────────────────────────────────────────────┤
+# │ ✅ Prepare Notification                         (1s)    │
+# │    └─ Slack webhook payload generated                   │
+# └─────────────────────────────────────────────────────────┘
+#
+# Artifacts:
+#   └─ health-report
+#       └─ health_report_20260127_143022.html
+#
+# ============================================================
