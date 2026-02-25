@@ -2,7 +2,7 @@ click==8.1.7
 pyyaml==6.0.2
 pandas==2.2.2
 numpy==1.26.4
-matplotlib==3.8.4
+matplotlib==3.10.8
 nbformat==5.10.4
 nbconvert==7.16.4
 black==24.4.2
