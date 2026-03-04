@@ -46,21 +46,6 @@ def publish_notebook(nb_path: pathlib.Path) -> None:
         raise click.ClickException(
             "jupyter command not found. Please install jupyter with: pip install jupyter nbconvert"
         ) from err
-            [
-                "jupyter",
-                "nbconvert",
-                "--to",
-                "html",
-                str(nb_path),
-                "--output",
-                html_path.name,
-            ],
-            check=True,
-        )
-    except FileNotFoundError as e:
-        raise click.ClickException(
-            "jupyter command not found. Please install Jupyter: pip install jupyter"
-        ) from e
     except subprocess.CalledProcessError as e:
         raise click.ClickException(f"Failed to convert notebook: {e}") from e
 
