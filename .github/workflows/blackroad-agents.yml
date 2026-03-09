@@ -11,62 +11,122 @@ on:
   push:
     branches: [main, master]
 
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
 jobs:
-  agent-response:
+  agent-cascade:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      
+      - uses: actions/checkout@v4
+
+      - name: Extract event context
+        id: ctx
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          # Resolve the body (comment wins, then issue, then PR)
+          BODY="${COMMENT_BODY:-${ISSUE_BODY:-$PR_BODY}}"
+          echo "body<<EOF" >> $GITHUB_OUTPUT
+          echo "$BODY" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+          # Resolve the number and type
+          if [ -n "$PR_NUMBER" ]; then
+            echo "number=$PR_NUMBER" >> $GITHUB_OUTPUT
+            echo "type=pr" >> $GITHUB_OUTPUT
+          elif [ -n "$ISSUE_NUMBER" ]; then
+            echo "number=$ISSUE_NUMBER" >> $GITHUB_OUTPUT
+            echo "type=issue" >> $GITHUB_OUTPUT
+          fi
+
       - name: Check for @blackroad-agents mention
         id: check_mention
         run: |
-          if echo "${{ github.event.comment.body || github.event.issue.body || github.event.pull_request.body }}" | grep -q "@blackroad-agents"; then
+          if echo "${{ steps.ctx.outputs.body }}" | grep -q "@blackroad-agents"; then
             echo "mentioned=true" >> $GITHUB_OUTPUT
+          else
+            echo "mentioned=false" >> $GITHUB_OUTPUT
           fi
-      
-      - name: Call AI Agent System
+
+      - name: Cascade to multiple agents ($0)
         if: steps.check_mention.outputs.mentioned == 'true'
-        run: |
-          # Extract request
-          REQUEST=$(echo "${{ github.event.comment.body || github.event.issue.body }}" | grep -A 10 "@blackroad-agents")
-          
-          # Call agent API (multiple providers for redundancy)
-          RESPONSE=$(curl -s -X POST https://blackroad-agents.amundsonalexa.workers.dev/agent \
-            -H "Content-Type: application/json" \
-            -d "{
-              \"request\": \"$REQUEST\",
-              \"repo\": \"${{ github.repository }}\",
-              \"context\": {
-                \"event\": \"${{ github.event_name }}\",
-                \"user\": \"${{ github.actor }}\"
-              }
-            }" || echo "Using fallback AI...")
-          
-          # Post response
-          gh issue comment ${{ github.event.issue.number || github.event.pull_request.number }} \
-            --body "$RESPONSE" || true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      
-      - name: Auto-fix code issues
-        if: github.event_name == 'pull_request'
+          REQUEST: ${{ steps.ctx.outputs.body }}
+          REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          ACTOR: ${{ github.actor }}
         run: |
-          # Run multiple AI code fixers in parallel
-          echo "Running AI code analysis..."
-          
-          # Get changed files
-          FILES=$(gh pr view ${{ github.event.pull_request.number }} --json files -q '.files[].path')
-          
+          PAYLOAD=$(jq -n \
+            --arg req "$REQUEST" \
+            --arg repo "$REPO" \
+            --arg event "$EVENT" \
+            --arg user "$ACTOR" \
+            '{"request":$req,"repo":$repo,"context":{"event":$event,"user":$user}}')
+
+          # Agent 1: GitHub Models API — free with GITHUB_TOKEN (no extra cost)
+          RESPONSE1=$(curl -sf -X POST https://models.github.ai/inference/chat/completions \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n --arg body "$REQUEST" \
+              '{"model":"openai/gpt-4o-mini","messages":[
+                {"role":"system","content":"You are a helpful AI assistant for the BlackRoad OS research lab. Be concise."},
+                {"role":"user","content":$body}
+              ]}')" \
+            2>/dev/null | jq -r '.choices[0].message.content // empty' || true)
+
+          # Agent 2: BlackRoad Cloudflare Workers AI — free tier
+          RESPONSE2=$(curl -sf -X POST https://blackroad-agents.amundsonalexa.workers.dev/agent \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD" \
+            2>/dev/null || true)
+
+          # Agent 3: Aria infrastructure agent — free self-hosted via Workers
+          RESPONSE3=$(curl -sf -X POST https://blackroad-agents.amundsonalexa.workers.dev/agent/aria \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD" \
+            2>/dev/null || true)
+
+          # Use first non-empty response from the cascade
+          RESPONSE="${RESPONSE1:-${RESPONSE2:-${RESPONSE3:-No response from agent cascade}}}"
+
+          DIVIDER="---"
+          COMMENT_BODY="$(printf '🤖 **BlackRoad AI Agent Cascade Response**\n\n%s\n\n%s\n*Agents tried (in order): GitHub Models · Cloudflare Workers AI · Aria — all $0*' "$RESPONSE" "$DIVIDER")"
+
+          NUMBER="${{ steps.ctx.outputs.number }}"
+          if [ "${{ steps.ctx.outputs.type }}" = "pr" ]; then
+            gh pr comment "$NUMBER" --body "$COMMENT_BODY" || true
+          else
+            gh issue comment "$NUMBER" --body "$COMMENT_BODY" || true
+          fi
+
+      - name: Auto-fix code on PRs (cascade)
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Running AI code analysis cascade..."
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          FILES=$(gh pr view "$PR_NUMBER" --json files -q '.files[].path' 2>/dev/null || echo "")
+
           for file in $FILES; do
-            echo "Analyzing $file with AI..."
-            
-            # Send to agent for auto-fix
-            curl -X POST https://blackroad-agents.amundsonalexa.workers.dev/autofix \
+            echo "Analyzing $file..."
+            # Agent 1: Cloudflare Workers autofix
+            curl -sf -X POST https://blackroad-agents.amundsonalexa.workers.dev/autofix \
+              -H "Content-Type: application/json" \
+              -d "{\"file\":\"$file\",\"repo\":\"${{ github.repository }}\"}" &
+            # Agent 2: Aria infrastructure agent autofix
+            curl -sf -X POST https://blackroad-agents.amundsonalexa.workers.dev/autofix/aria \
               -H "Content-Type: application/json" \
               -d "{\"file\":\"$file\",\"repo\":\"${{ github.repository }}\"}" &
           done
-          
+
           wait
-          echo "✅ All files analyzed"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          echo "✅ All files analyzed by agent cascade"
